@@ -1,0 +1,1 @@
+def simple(x y) x=3 : y = 2 : x + 3 + 2 - y : var x=4, z, w=5 in x+y+w end;
