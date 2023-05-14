@@ -116,13 +116,22 @@ void VariableExprAST::visit() {
 };
 
 Value *VariableExprAST::codegen(driver& drv) {
-  if (gettop()) {
+  if (gettop())
     return TopExpression(this, drv);
-  } else {
-    AllocaInst *V = drv.NamedValues[Name];
-    if (!V) LogErrorV("Variabile non definita");
-    return drv.builder->CreateLoad(V->getAllocatedType(), V, Name.c_str());
+
+  Value* result = nullptr;
+  AllocaInst *V = drv.NamedValues[Name];
+  if (!V) LogErrorV("Variabile non definita");
+  if(V->getType()->isPointerTy()) {
+    Type* baseType = static_cast<PointerType*>(V->getType());
+    baseType = baseType->getContainedType(0);
+    if(baseType->isArrayTy()) {
+      // getelementptr...  // TODO!!
+    } else {
+      result = drv.builder->CreateLoad(V->getAllocatedType(), V, Name.c_str());
+    }
   }
+  return result;
 };
 
 /********************* Unary Expression Tree ***********************/
@@ -176,8 +185,9 @@ Value* AssignmentExprAST::codegen(driver& drv)
   AllocaInst *var = drv.NamedValues[id];
   if (!var)
     return nullptr;
-
-  drv.builder->CreateStore(value, var);
+  
+  if(value)
+    drv.builder->CreateStore(value, var);
   return value;
 }
 
@@ -467,7 +477,7 @@ Value *ForExprAST::codegen(driver& drv)
   // Generazione blocco 'header'
   drv.builder->SetInsertPoint(header);
 
-  PHINode* phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "iftmp");
+  PHINode* phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "fortmp");
   phi->addIncoming(ConstantFP::get(*drv.context, APFloat(0.0)),
                    preheader);
 
@@ -513,6 +523,8 @@ Value *ForExprAST::codegen(driver& drv)
   return phi;
 }
 
+/************************* Varexpr Expression Tree **************************/
+
 VarExprAST::VarExprAST(std::vector<AssignmentExprAST*>& vars, ExprAST* body)
 : vars(vars), body(body)
 { }
@@ -545,8 +557,87 @@ Value* VarExprAST::codegen(driver& drv) {
   for(int i = 0; i < vars.size(); ++i)
     vars[i]->codegen(drv);
 
+  auto  *value = body->codegen(drv);
   // Ripristino della mappa
   drv.NamedValues = shadowed;
 
-  return body->codegen(drv);
+  return value;
 }
+
+/************************* While Expression Tree **************************/
+
+WhileExprAST::WhileExprAST(ExprAST* cond, ExprAST* body)
+: cond(cond), body(body) { }
+
+void WhileExprAST::visit() {
+  std::cout << "while (";
+  cond->visit();
+  std::cout << ") in (";
+  body->visit();
+  std::cout << ")";
+}
+
+Value* WhileExprAST::codegen(driver& drv) {
+  if (gettop())
+    return TopExpression(this, drv);
+
+  BasicBlock* preheader = drv.builder->GetInsertBlock();
+  Function* curFunction = preheader->getParent();
+
+  BasicBlock *header = BasicBlock::Create(*drv.context, "header", curFunction);
+  BasicBlock *bodyBB = BasicBlock::Create(*drv.context, "body", curFunction);
+  BasicBlock *exitBB = BasicBlock::Create(*drv.context, "exit", curFunction);
+
+  drv.builder->CreateBr(header);
+
+  // Generazione blocco 'header'
+  drv.builder->SetInsertPoint(header);
+
+  PHINode* phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "whiletmp");
+  phi->addIncoming(ConstantFP::get(*drv.context, APFloat(0.0)),
+                   preheader);
+
+  Value* condValue = cond->codegen(drv);
+  if(!condValue)
+    return nullptr;
+  if(condValue->getType()->isDoubleTy())
+    condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "forcond");
+  
+  drv.builder->CreateCondBr(condValue, bodyBB, exitBB);
+  
+
+  // Generazione del blocco 'body'
+  drv.builder->SetInsertPoint(bodyBB);
+  auto bodyValue = this->body->codegen(drv);
+  if(!bodyValue)
+    return nullptr;
+
+  phi->addIncoming(bodyValue, bodyBB);
+  drv.builder->CreateBr(header);
+
+  drv.builder->SetInsertPoint(exitBB);
+  return phi;
+}
+
+/************************* InitList Expression Tree **************************/
+// TODO!!!
+
+InitListExprAST::InitListExprAST(std::vector<ExprAST*> expr)
+: exprs(expr) {}
+
+void InitListExprAST::visit()
+{
+  std::cout << "{";
+
+  bool first = true;
+  for (auto *expr: exprs)
+  { 
+      if (first)
+        std::cout << ", ";
+
+      expr->visit();
+      first = false;
+  }
+  
+  std::cout << "}";
+} 

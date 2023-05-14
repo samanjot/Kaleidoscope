@@ -19,6 +19,9 @@
   class IfExprAST;
   class ForExprAST;
   class AssignmentExprAST;
+  class WhileExprAST;
+  class VarExprAST;
+  struct Pair;
 }
 
 // The parsing context.
@@ -46,6 +49,10 @@
   ASSIGN     "="
   LPAREN     "("
   RPAREN     ")"
+  LCBRACKET  "{"
+  RCBRACKET  "}"
+  LSBRACKET  "["
+  RSBRACKET  "]"
   LT         "<"
   LE         "<="
   GT         ">"
@@ -61,6 +68,7 @@
   FOR        "for"
   IN         "in"
   VAR        "var"
+  WHILE      "while"
 ;
 
 %token <std::string> IDENTIFIER "id"
@@ -81,8 +89,9 @@
 %type <std::vector<std::string>> idseq
 %type <ExprAST*> assignment
 %type <ExprAST*> varexp
-%type <std::vector<AssignmentExprAST*>> varlist
-%type <AssignmentExprAST*> pair
+%type <std::vector<Pair>> varlist
+%type <Pair> pair
+%type <ExprAST*> whileexp
 
 %%
 %start startsymb;
@@ -113,6 +122,8 @@ idseq:
   %empty               { std::vector<std::string> args;
                          $$ = args; }
 | "id" idseq           { $2.insert($2.begin(),$1); $$ = $2; };
+| "id" "[" "]"         // TODO!!!
+;
 
 %left ":";
 %right "=";
@@ -139,11 +150,22 @@ exp:
 | forexp               { $$ = $1; }
 | assignment           { $$ = $1; }
 | varexp               { $$ = $1; }
+| whileexp             { $$ = $1; }
 | "number"             { $$ = new NumberExprAST($1); };
+| "{" explist "}"      { $$ = new InitListExprAST($2); }
+
+explist:
+  exp                 { std::vector<ExpAST *> vec;
+                        vec.insert($1);
+                        $$ = vec;
+                      }
+
+| exp "," explist     { $3.insert($2.begin(), $1);
+                        $$ = $1;
+                      }
 
 assignment:
-  "id" "=" exp         { $$ = new AssignmentExprAST($1,$3); }
-;
+  "id" optarray "=" exp         { $$ = new AssignmentExprAST($1,$3); }  // TODO!!!
 
 unaryexp:
   "+" exp              { $$ = new UnaryExprAST('+',$2); }
@@ -151,11 +173,16 @@ unaryexp:
 ;
 
 varexp:
-  "var" varlist "in" exp "end"  { $$ = new VarExprAST($2, $4); }
+  "var" varlist "in" exp "end"  {
+                                  // Converti in vector separati
+                                  std::
+
+                                  $$ = new VarExprAST($2, $4);
+                                }
 ;
 
 varlist:
-  pair                  { std::vector<AssignmentExprAST*> vars;
+  pair                  { std::vector<Pair> vars;
                           vars.push_back($1);
                           $$ = vars;
                         }
@@ -166,12 +193,17 @@ varlist:
 ;
 
 pair:
-  "id"                  { $$ = new AssignmentExprAST($1, nullptr); }
-| "id" "=" exp          { $$ = new AssignmentExprAST($1, $3); }
+  "id" optarray         { $$ = { $1, nullptr }; }
+| "id" optarray "=" exp { $$ = { $1, $4 }; }  // TODO!!
 ;
+
+optarray:
+  %empty
+| "[" exp "]"  //TODO!!!
 
 idexp:
   "id"                 { $$ = new VariableExprAST($1); }
+| "id" "[" exp "]"     // TODO!!!
 | "id" "(" optexp ")"  { $$ = new CallExprAST($1,$3); };
 
 optexp:
@@ -200,6 +232,9 @@ step:
   %empty               { $$ = nullptr; }
 | "," exp                  { $$ = $2; }
 ;
+
+whileexp:
+  "while" exp "in" exp "end"      { $$ = new WhileExprAST($2, $4); };
 
 %%
 

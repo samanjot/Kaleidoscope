@@ -58,6 +58,10 @@ blank   [ \t]
 "/"      return yy::parser::make_SLASH     (loc);
 "("      return yy::parser::make_LPAREN    (loc);
 ")"      return yy::parser::make_RPAREN    (loc);
+"["      return yy::parser::make_LSBRACKET (loc);
+"]"      return yy::parser::make_RSBRACKET (loc);
+"{"      return yy::parser::make_LCBRACKET (loc);
+"}"      return yy::parser::make_RCBRACKET (loc);
 ";"      return yy::parser::make_SEMICOLON (loc);
 ","      return yy::parser::make_COMMA     (loc);
 "="      return yy::parser::make_ASSIGN    (loc);
@@ -97,6 +101,8 @@ yy::parser::symbol_type check_keywords(std::string lexeme, yy::location& loc)  {
       return yy::parser::make_END(loc);
    } else if (lexeme == "var") {
       return yy::parser::make_VAR(loc);
+   } else if (lexeme == "while") {
+      return yy::parser::make_WHILE(loc);
    } else {
      return yy::parser::make_IDENTIFIER (yytext, loc);
    }

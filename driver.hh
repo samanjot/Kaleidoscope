@@ -141,13 +141,18 @@ public:
   Value *codegen(driver& drv) override;
 };
 
+struct Pair {
+  std::string id;
+  ExprAST* expr;
+};
+
 class VarExprAST : public ExprAST {
-  private:
-  std::vector<AssignmentExprAST*> vars;
+private:
+  std::vector<Pair> vars;
   ExprAST* body;
 
   public:
-  VarExprAST(std::vector<AssignmentExprAST*>& vars, ExprAST* body);
+  VarExprAST(std::vector<Pair>& vars, ExprAST* body);
   void visit() override;
   Value* codegen(driver& drv) override;
 };
@@ -248,6 +253,27 @@ private:
 
 public:
   ForExprAST(std::string id, ExprAST* init, ExprAST* cond, ExprAST* step, ExprAST *body);
+  void visit() override;
+  Value* codegen(driver& drv) override;
+};
+
+class WhileExprAST : public ExprAST {
+private:
+  ExprAST* cond;
+  ExprAST* body;
+
+public:
+  WhileExprAST(ExprAST* cond, ExprAST* body);
+  void visit() override;
+  Value* codegen(driver& drv) override;
+};
+
+class InitListExprAST : public ExprAST {
+private:
+  std::vector<ExprAST*> exprs;
+
+public:
+  InitListExprAST(std::vector<ExprAST*> expr);
   void visit() override;
   Value* codegen(driver& drv) override;
 };
