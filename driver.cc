@@ -4,12 +4,13 @@
 
 static AllocaInst *CreateEntryBlockAlloca(driver &drv,
                                           Function *func,
-                                          const std::string &name) 
+                                          const std::string &name,
+                                          Type *type) 
 {
   IRBuilder<> tmp(&func->getEntryBlock(), 
                   func->getEntryBlock().begin());
 
-  return tmp.CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, name);
+  return tmp.CreateAlloca(type, nullptr, name);
 }
 
 Value *LogErrorV(const std::string Str) {
@@ -47,7 +48,7 @@ Value* TopExpression(ExprAST* E, driver& drv) {
   // viene "racchiusa" un'espressione top-level
   E->toggle(); // Evita la doppia emissione del prototipo
   PrototypeAST *Proto = new PrototypeAST("__espr_anonima"+std::to_string(++drv.Cnt),
-		  std::vector<std::string>());
+		  std::vector<ProtoArgument>());
   Proto->noemit();
   FunctionAST *F = new FunctionAST(std::move(Proto),E);
   auto *FnIR = F->codegen(drv);
@@ -106,6 +107,8 @@ Value *NumberExprAST::codegen(driver& drv) {
 /****************** Variable Expression TreeAST *******************/
 VariableExprAST::VariableExprAST(std::string &Name):
   Name(Name) { top = false; };
+VariableExprAST::VariableExprAST(std::string &Name, ExprAST* idx)
+: Name(Name), idx(idx) { top = false; };
 
 const std::string& VariableExprAST::getName() const {
   return Name;
@@ -125,8 +128,20 @@ Value *VariableExprAST::codegen(driver& drv) {
   if(V->getType()->isPointerTy()) {
     Type* baseType = static_cast<PointerType*>(V->getType());
     baseType = baseType->getContainedType(0);
-    if(baseType->isArrayTy()) {
-      // getelementptr...  // TODO!!
+    if(baseType->isPointerTy()) {
+      if(idx) {
+        Value* idxValue = idx->codegen(drv);
+        
+        // TODO test
+        Value* baseAddr = drv.builder->CreateLoad(Type::getDoublePtrTy(*drv.context), V, "loadtmp");
+        // TODO check che idx sia double e non pointer
+        Value* idxInt = drv.builder->CreateFPCast(idxValue, Type::getInt64Ty(*drv.context), "casttmp");
+        Value* addr = drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), baseAddr, idxInt, "GEPtmp");
+        result = drv.builder->CreateLoad(Type::getDoubleTy(*drv.context), addr, "loadtmp");
+      }
+      else {
+        // TODO: Stampa errore
+      }
     } else {
       result = drv.builder->CreateLoad(V->getAllocatedType(), V, Name.c_str());
     }
@@ -182,9 +197,19 @@ Value* AssignmentExprAST::codegen(driver& drv)
       return nullptr;
   }
 
-  AllocaInst *var = drv.NamedValues[id];
+  Value *var = drv.NamedValues[id];
   if (!var)
     return nullptr;
+  if (idx) {
+    // TODO: controllo che la var sia un array
+
+    Value* idxValue = idx->codegen(drv);
+    if(!idxValue)
+      return nullptr;
+
+    // In questo modo, la store viene effettuata nel singolo elemento dell'array
+    var = drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), var, idxValue, "GEPtmp");
+  }
   
   if(value)
     drv.builder->CreateStore(value, var);
@@ -269,15 +294,21 @@ Value *CallExprAST::codegen(driver& drv) {
 }
 
 /************************* Prototype Tree *************************/
-PrototypeAST::PrototypeAST(std::string Name, std::vector<std::string> Args): Name(Name),
+PrototypeAST::PrototypeAST(std::string Name, std::vector<ProtoArgument> Args): Name(Name),
 									     Args(std::move(Args)) { emit = true; };
 const std::string& PrototypeAST::getName() const { return Name; };
-const std::vector<std::string>& PrototypeAST::getArgs() const { return Args; };
+const std::vector<ProtoArgument>& PrototypeAST::getArgs() const { return Args; };
 void PrototypeAST::visit() {
   std::cout << "extern " << getName() << "( ";
-  for (auto it=getArgs().begin(); it!= getArgs().end(); ++it) {
-    std::cout << *it << ' ';
-  };
+  
+  for (ProtoArgument arg : Args){
+    std::cout << arg.name;
+    if (arg.isPointer)
+      std::cout << "[]";
+
+    std::cout << " ";
+  }
+  
   std::cout << ')';
 };
 
@@ -288,16 +319,25 @@ bool PrototypeAST::emitp() { return emit; };
 Function *PrototypeAST::codegen(driver& drv) {
   // Costruisce una struttura double(double,...,double) che descrive 
   // tipo di ritorno e tipo dei parametri (in Kaleidoscope solo double)
-  std::vector<Type*> Doubles(Args.size(), Type::getDoubleTy(*drv.context));
+  std::vector<Type*> Doubles;
+  //auto *doubleT = Type::getDoubleTy(*drv.context);
+
+  for (ProtoArgument arg : Args){
+    Doubles.push_back((arg.isPointer) ? Type::getDoublePtrTy(*drv.context)
+                                      : Type::getDoubleTy(*drv.context));
+  }
+ 
   FunctionType *FT =
       FunctionType::get(Type::getDoubleTy(*drv.context), Doubles, false);
   Function *F =
       Function::Create(FT, Function::ExternalLinkage, Name, *drv.module);
+  if(!F)
+    return nullptr;
 
   // Attribuiamo agli argomenti il nome dei parametri formali specificati dal programmatore
   unsigned Idx = 0;
   for (auto &Arg : F->args())
-    Arg.setName(Args[Idx++]);
+    Arg.setName(Args[Idx++].name);
 
   if (emitp()) {  // emitp() restituisce true se e solo se il prototipo è definito extern
     F->print(errs());
@@ -316,9 +356,14 @@ FunctionAST::FunctionAST(PrototypeAST* Proto, ExprAST* Body):
 
 void FunctionAST::visit() {
   std::cout << Proto->getName() << "( ";
-  for (auto it=Proto->getArgs().begin(); it!= Proto->getArgs().end(); ++it) {
-    std::cout << *it << ' ';
-  };
+  for (ProtoArgument arg : Proto->getArgs()){
+    std::cout << arg.name;
+    if (arg.isPointer)
+      std::cout << "[]";
+
+    std::cout << " ";
+  }
+  
   std::cout << ')';
   Body->visit();
 };
@@ -335,7 +380,7 @@ Function *FunctionAST::codegen(driver& drv) {
   if (!TheFunction)
     TheFunction = Proto->codegen(drv);
   if (!TheFunction)
-    return nullptr;  // Se la definizione "fallisce" restituisce nullptr
+    return nullptr;
 
   // Crea un blocco di base in cui iniziare a inserire il codice
   BasicBlock *BB = BasicBlock::Create(*drv.context, "entry", TheFunction);
@@ -344,7 +389,8 @@ Function *FunctionAST::codegen(driver& drv) {
   // Registra gli argomenti nella symbol table
   drv.NamedValues.clear();
   for (auto &Arg : TheFunction->args()) {
-    AllocaInst *alloca = CreateEntryBlockAlloca(drv, TheFunction, std::string(Arg.getName()));
+    AllocaInst *alloca = CreateEntryBlockAlloca(drv, TheFunction, std::string(Arg.getName()),
+                                                Arg.getType());
     drv.builder->CreateStore(&Arg, alloca);
     drv.NamedValues[std::string(Arg.getName())] = alloca;
   }
@@ -462,7 +508,8 @@ Value *ForExprAST::codegen(driver& drv)
   BasicBlock *preheader = drv.builder->GetInsertBlock();
   Function* curFunction = preheader->getParent();
 
-  AllocaInst *alloca = CreateEntryBlockAlloca(drv, curFunction, id);
+  AllocaInst *alloca = CreateEntryBlockAlloca(drv, curFunction, id,
+                                              Type::getDoubleTy(*drv.context));
 
   Value *initVal = init->codegen(drv);
   if (!initVal)
@@ -525,14 +572,14 @@ Value *ForExprAST::codegen(driver& drv)
 
 /************************* Varexpr Expression Tree **************************/
 
-VarExprAST::VarExprAST(std::vector<AssignmentExprAST*>& vars, ExprAST* body)
+VarExprAST::VarExprAST(std::vector<Pair>& vars, ExprAST* body)
 : vars(vars), body(body)
 { }
 
 void VarExprAST::visit() {
   std::cout << "varexpr list (";
   for(int i = 0; i < vars.size(); ++i) {
-    vars[i]->visit();
+    vars[i].expr->visit();
     if(i < vars.size() - 1)
       std::cout << " , ";
   }
@@ -550,14 +597,14 @@ Value* VarExprAST::codegen(driver& drv) {
   std::map<std::string, AllocaInst*> shadowed = drv.NamedValues;
 
   for(int i = 0; i < vars.size(); ++i) {
-    AllocaInst* alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, vars[i]->id);
-    drv.NamedValues[vars[i]->id] = alloca;
+    AllocaInst* alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, vars[i].id);
+    drv.NamedValues[vars[i].id] = alloca;
   }
 
   for(int i = 0; i < vars.size(); ++i)
-    vars[i]->codegen(drv);
+    vars[i].expr->codegen(drv);
 
-  auto  *value = body->codegen(drv);
+  Value *value = body->codegen(drv);
   // Ripristino della mappa
   drv.NamedValues = shadowed;
 
@@ -641,3 +688,7 @@ void InitListExprAST::visit()
   
   std::cout << "}";
 } 
+
+Value *InitListExprAST::codegen(driver &drv) {
+  return nullptr;
+}

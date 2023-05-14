@@ -110,9 +110,11 @@ public:
 class VariableExprAST : public ExprAST {
 private:
   std::string Name;
+  ExprAST* idx = nullptr;  // Utilizzato soltanto per gli array
   
 public:
   VariableExprAST(std::string &Name);
+  VariableExprAST(std::string &Name, ExprAST* idx);
   const std::string &getName() const;
   void visit() override;
   Value *codegen(driver& drv) override;
@@ -134,16 +136,12 @@ public:
   std::string id;
 private:
   ExprAST *expr;
+  ExprAST *idx = nullptr;  // Utilizzato soltanto per gli array
   
 public:
   AssignmentExprAST(std::string id, ExprAST* expr);
   void visit() override;
   Value *codegen(driver& drv) override;
-};
-
-struct Pair {
-  std::string id;
-  ExprAST* expr;
 };
 
 class VarExprAST : public ExprAST {
@@ -202,16 +200,17 @@ public:
 /// PrototypeAST - Classe per la rappresentazione dei prototipi di funzione
 /// (nome, numero e nome dei parametri; in questo caso il tipo è implicito
 /// perché unico)
+
 class PrototypeAST : public RootAST {
 private:
   std::string Name;
-  std::vector<std::string> Args;
+  std::vector<ProtoArgument> Args;
   bool emit;
 
 public:
-  PrototypeAST(std::string Name, std::vector<std::string> Args);
+  PrototypeAST(std::string Name, std::vector<ProtoArgument> Args);
   const std::string &getName() const;
-  const std::vector<std::string> &getArgs() const; 
+  const std::vector<ProtoArgument> &getArgs() const; 
   void visit() override;
   Function *codegen(driver& drv) override;
   void noemit();

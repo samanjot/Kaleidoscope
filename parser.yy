@@ -22,6 +22,19 @@
   class WhileExprAST;
   class VarExprAST;
   struct Pair;
+  struct ProtoArgument;
+
+  struct Pair {
+    std::string id;
+    ExprAST* expr;
+  };
+
+  struct ProtoArgument{
+    std::string name;
+    bool isPointer;
+  };
+
+
 }
 
 // The parsing context.
@@ -86,12 +99,13 @@
 %type <FunctionAST*> definition
 %type <PrototypeAST*> external
 %type <PrototypeAST*> proto
-%type <std::vector<std::string>> idseq
+%type <std::vector<ProtoArgument>> idseq
 %type <ExprAST*> assignment
 %type <ExprAST*> varexp
 %type <std::vector<Pair>> varlist
 %type <Pair> pair
 %type <ExprAST*> whileexp
+%type <ProtoArgument> argument
 
 %%
 %start startsymb;
@@ -119,11 +133,22 @@ proto:
   "id" "(" idseq ")"   { $$ = new PrototypeAST($1,$3); };
 
 idseq:
-  %empty               { std::vector<std::string> args;
+  %empty               { std::vector<ProtoArgument> args;
                          $$ = args; }
-| "id" idseq           { $2.insert($2.begin(),$1); $$ = $2; };
-| "id" "[" "]"         // TODO!!!
+| argument idseq       { $2.insert($2.begin(),$1); $$ = $2; };
 ;
+
+argument:
+  "id"                { ProtoArgument arg;
+                        arg.name = $1;
+                        arg.isPointer = false;
+                        $$ = arg;
+                      }
+| "id" "[" "]"        { ProtoArgument arg;
+                        arg.name = $1;
+                        arg.isPointer = true;
+                        $$ = arg;
+                      }
 
 %left ":";
 %right "=";
@@ -153,19 +178,10 @@ exp:
 | whileexp             { $$ = $1; }
 | "number"             { $$ = new NumberExprAST($1); };
 | "{" explist "}"      { $$ = new InitListExprAST($2); }
-
-explist:
-  exp                 { std::vector<ExpAST *> vec;
-                        vec.insert($1);
-                        $$ = vec;
-                      }
-
-| exp "," explist     { $3.insert($2.begin(), $1);
-                        $$ = $1;
-                      }
+;
 
 assignment:
-  "id" optarray "=" exp         { $$ = new AssignmentExprAST($1,$3); }  // TODO!!!
+  "id" optarray "=" exp         { $$ = new AssignmentExprAST($1,$4); }  // TODO!!!
 
 unaryexp:
   "+" exp              { $$ = new UnaryExprAST('+',$2); }
@@ -173,12 +189,7 @@ unaryexp:
 ;
 
 varexp:
-  "var" varlist "in" exp "end"  {
-                                  // Converti in vector separati
-                                  std::
-
-                                  $$ = new VarExprAST($2, $4);
-                                }
+  "var" varlist "in" exp "end"  { $$ = new VarExprAST($2, $4); }
 ;
 
 varlist:
@@ -203,7 +214,7 @@ optarray:
 
 idexp:
   "id"                 { $$ = new VariableExprAST($1); }
-| "id" "[" exp "]"     // TODO!!!
+| "id" "[" exp "]"     { $$ = new VariableExprAST($1, $3); } // TODO!!!
 | "id" "(" optexp ")"  { $$ = new CallExprAST($1,$3); };
 
 optexp:
