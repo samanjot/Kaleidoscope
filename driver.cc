@@ -18,6 +18,62 @@ Value *LogErrorV(const std::string Str) {
   return nullptr;
 }
 
+static Type* GetDoubleArrayType(driver &drv, uint64_t size)
+{
+  return ArrayType::get(Type::getDoubleTy(*drv.context), size);
+}
+
+static Value* GetArrayAddress(driver &drv, Value* idx, Value* base)
+{
+  assert(base->getType()->isPointerTy());
+  assert(idx->getType()->isDoubleTy());
+
+  Type* baseType = static_cast<PointerType*>(base->getType());
+  baseType = baseType->getContainedType(0);
+
+  // A seconda che si utilizzino gli array o i puntatori, si fa un utilizzo leggermente
+  // diverso dell'istruzione GetElementPointer.
+  if(baseType->isArrayTy()) {
+    Value* baseAddr = drv.builder->CreateLoad(baseType, base, "loadtmp");
+    // TODO check che idx sia double e non pointer
+    Value* idxInt = drv.builder->CreateFPToUI(idx, Type::getInt64Ty(*drv.context), "casttmp");
+
+    Value* indices[3] = { ConstantInt::get(*drv.context, APInt(32, 0)), idxInt };
+    ArrayRef<Value*> valueArr(indices, 2);
+    
+    return drv.builder->CreateInBoundsGEP(baseType, base, valueArr, "GEPtmp");
+  }
+  else {
+    Value* baseAddr = drv.builder->CreateLoad(Type::getDoublePtrTy(*drv.context), base, "loadtmp");
+    // TODO check che idx sia double e non pointer
+    Value* idxInt = drv.builder->CreateFPToUI(idx, Type::getInt64Ty(*drv.context), "casttmp");
+    // TODO il primo argomento qua dovrebbe essere baseType?
+    return drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), baseAddr, idxInt, "GEPtmp");
+  }
+}
+
+// TODO: assicurarsi che tutti i controlli che vengono fatti sopra vengono anche fatti qua
+static Value* GetArrayAddress(driver &drv, uint64_t idx, Value* base)
+{
+  assert(base->getType()->isPointerTy());
+
+  Type* baseType = static_cast<PointerType*>(base->getType());
+  baseType = baseType->getContainedType(0);
+
+  // A seconda che si utilizzino gli array o i puntatori, si fa un utilizzo leggermente
+  // diverso dell'istruzione GetElementPointer.
+  if(baseType->isArrayTy()) {  // Puntatore ad un array
+    Value* baseAddr = drv.builder->CreateLoad(baseType, base, "loadtmp");
+
+    Value* indices[3] = { ConstantInt::get(*drv.context, APInt(32, 0)), ConstantInt::get(*drv.context, APInt(64, idx)) };
+    ArrayRef<Value*> valueArr(indices, 2);
+
+    return drv.builder->CreateInBoundsGEP(baseType, base, valueArr, "GEPtmp");
+  }
+  else  // Puntatore ad un puntatore
+    return drv.builder->CreateLoad(Type::getDoublePtrTy(*drv.context), base, "loadtmp");
+}
+
 /*************************** Driver class *************************/
 driver::driver(): trace_parsing (false), trace_scanning (false), ast_print (false) {
   context = new LLVMContext;
@@ -99,6 +155,8 @@ void NumberExprAST::visit() {
   std::cout << Val << " ";
 };
 
+double NumberExprAST::GetVal() { return Val; }
+
 Value *NumberExprAST::codegen(driver& drv) {  
   if (gettop()) return TopExpression(this, drv);
   else return ConstantFP::get(*drv.context, APFloat(Val));
@@ -128,19 +186,20 @@ Value *VariableExprAST::codegen(driver& drv) {
   if(V->getType()->isPointerTy()) {
     Type* baseType = static_cast<PointerType*>(V->getType());
     baseType = baseType->getContainedType(0);
-    if(baseType->isPointerTy()) {
+    if(!baseType->isDoubleTy()) {  // Si tratta di un array (tipo puntatore oppure array)
       if(idx) {
         Value* idxValue = idx->codegen(drv);
+        if(!idxValue)
+          return nullptr;
         
-        // TODO test
-        Value* baseAddr = drv.builder->CreateLoad(Type::getDoublePtrTy(*drv.context), V, "loadtmp");
-        // TODO check che idx sia double e non pointer
-        Value* idxInt = drv.builder->CreateFPCast(idxValue, Type::getInt64Ty(*drv.context), "casttmp");
-        Value* addr = drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), baseAddr, idxInt, "GEPtmp");
-        result = drv.builder->CreateLoad(Type::getDoubleTy(*drv.context), addr, "loadtmp");
+        Value *arrAddr = GetArrayAddress(drv, idxValue, V);
+        if(!arrAddr)
+          return nullptr;
+
+        result = drv.builder->CreateLoad(Type::getDoubleTy(*drv.context), arrAddr, "loadtmp");
       }
       else {
-        // TODO: Stampa errore
+        return GetArrayAddress(drv, (uint64_t)0, V);
       }
     } else {
       result = drv.builder->CreateLoad(V->getAllocatedType(), V, Name.c_str());
@@ -161,25 +220,25 @@ void UnaryExprAST::visit()
 }
 
 Value* UnaryExprAST::codegen(driver& drv) {
-  if (gettop()) {
+  if (gettop())
     return TopExpression(this, drv);
-  } else {
-    Value* value = expr->codegen(drv);
-    if (!value) return nullptr;
-    switch (op) {
-    case '+':
-      return value;
-    case '-':
-      return drv.builder->CreateFSub(ConstantFP::get(*drv.context, APFloat(0.0)), value);
-    default:  
-      return LogErrorV("Operatore unario non supportato");
-    }
+  
+  Value* value = expr->codegen(drv);
+  if (!value) return nullptr;
+  
+  switch (op) {
+  case '+':
+    return value;
+  case '-':
+    return drv.builder->CreateFSub(ConstantFP::get(*drv.context, APFloat(0.0)), value);
+  default:  
+    return LogErrorV("Operatore unario non supportato");
   }
 }
 
 /********************* Assignment Expression Tree ***********************/
-AssignmentExprAST::AssignmentExprAST(std::string id, ExprAST* expr)
-: id(id), expr(expr) {}
+AssignmentExprAST::AssignmentExprAST(std::string id, ExprAST* expr, ExprAST* idx)
+: id(id), expr(expr), idx(idx) {}
 
 void AssignmentExprAST::visit() 
 {
@@ -200,17 +259,25 @@ Value* AssignmentExprAST::codegen(driver& drv)
   Value *var = drv.NamedValues[id];
   if (!var)
     return nullptr;
+
   if (idx) {
-    // TODO: controllo che la var sia un array
+    // TODO: controlla che la var sia un array
 
     Value* idxValue = idx->codegen(drv);
     if(!idxValue)
       return nullptr;
 
     // In questo modo, la store viene effettuata nel singolo elemento dell'array
-    var = drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), var, idxValue, "GEPtmp");
+    var = GetArrayAddress(drv, idxValue, var);
   }
-  
+  else {
+    // TODO: testa questo
+    if(!var->getType()->isDoubleTy()) {
+      std::cerr << "Errore: Assegnamento di un array non consentito\n";
+      return nullptr;
+    }
+  }
+
   if(value)
     drv.builder->CreateStore(value, var);
   return value;
@@ -279,7 +346,7 @@ Value *CallExprAST::codegen(driver& drv) {
     // Cerchiamo la funzione nell'ambiente globale
     Function *CalleeF = drv.module->getFunction(Callee);
     if (!CalleeF)
-      return LogErrorV("Funzione non definita");
+      return LogErrorV("Funzione non definita\n");
     // Controlliamo che gli argomenti coincidano in numero coi parametri
     if (CalleeF->arg_size() != Args.size())
       return LogErrorV("Numero di argomenti non corretto");
@@ -395,18 +462,21 @@ Function *FunctionAST::codegen(driver& drv) {
     drv.NamedValues[std::string(Arg.getName())] = alloca;
   }
 
-  if (Value *RetVal = Body->codegen(drv)) {
-    // Termina la creazione del codice corrispondente alla funzione
-    drv.builder->CreateRet(RetVal);
-
-    // Effettua la validazione del codice e un controllo di consistenza
-    verifyFunction(*TheFunction);
-
-    TheFunction->print(errs());
-    fprintf(stderr, "\n");
-    return TheFunction;
+  Value* retVal = Body->codegen(drv);
+  bool error = false;
+  if(!retVal)
+  {
+    // Ritorna 0 se qualcosa è andato storto
+    retVal = ConstantFP::get(*drv.context, APFloat(0.0));
+    error = true;
   }
 
+  drv.builder->CreateRet(retVal);
+  verifyFunction(*TheFunction);
+  TheFunction->print(errs());
+  fprintf(stderr, "\n");
+  
+  if(!error) return TheFunction;
   // Errore nella definizione. La funzione viene rimossa
   TheFunction->eraseFromParent();
   return nullptr;
@@ -556,6 +626,9 @@ Value *ForExprAST::codegen(driver& drv)
   else
     stepValue = ConstantFP::get(*drv.context, APFloat(1.0));
 
+  if(!stepValue)
+    return nullptr;
+
   Value *currentValue = drv.builder->CreateLoad(alloca->getAllocatedType(), alloca, id.c_str());
   stepValue = drv.builder->CreateFAdd(currentValue, stepValue, "steptmp");
   drv.builder->CreateStore(stepValue, alloca);
@@ -596,15 +669,51 @@ Value* VarExprAST::codegen(driver& drv) {
   // Per gestire lo shadowing
   std::map<std::string, AllocaInst*> shadowed = drv.NamedValues;
 
+  // Passata per le allocazioni stack
   for(int i = 0; i < vars.size(); ++i) {
-    AllocaInst* alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, vars[i].id);
+    AllocaInst* alloca = nullptr;
+
+    if(vars[i].arrSize) {
+      if(auto numExpr = dynamic_cast<NumberExprAST*>(vars[i].arrSize)) {
+        alloca = drv.builder->CreateAlloca(ArrayType::get(Type::getDoubleTy(*drv.context),
+                                                          (uint64_t)numExpr->GetVal()),
+                                           nullptr, vars[i].id);
+      }
+      else {
+        std::cerr << "Attenzione! Si sta tentando di utilizzare le VLA!\n";
+        return nullptr;
+        // TODO: stampa errore (variable length array) oppure gestisci questo caso (in questo caso bisogna usare un puntatore)
+      }
+    }
+    else
+      alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, vars[i].id);
+
     drv.NamedValues[vars[i].id] = alloca;
   }
 
-  for(int i = 0; i < vars.size(); ++i)
-    vars[i].expr->codegen(drv);
+  // Passata per le inizializzazioni (store)
+  for(int i = 0; i < vars.size(); ++i) {
+    auto alloca = drv.NamedValues[vars[i].id];
+    if(vars[i].arrSize) {  // Si tratta di una dichiarazione di array
+      for(int j = 0; j < vars[i].initList.size(); ++j) {
+        Value* toStore = vars[i].initList[j]->codegen(drv);
+        Value* storeInto = GetArrayAddress(drv, j, alloca);
+        drv.builder->CreateStore(toStore, storeInto);
+      }
+    }
+    else if(vars[i].expr) {  // Si tratta di una dichiarazione di double
+      // TODO: controlla che venga assegnato il tipo giusto
+      Value* exprValue = vars[i].expr->codegen(drv);
+      if(!exprValue) return nullptr;
+
+      drv.builder->CreateStore(exprValue, alloca);
+    }
+  }
 
   Value *value = body->codegen(drv);
+  if(!value)
+    return nullptr;
+
   // Ripristino della mappa
   drv.NamedValues = shadowed;
 
@@ -651,7 +760,6 @@ Value* WhileExprAST::codegen(driver& drv) {
     condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "forcond");
   
   drv.builder->CreateCondBr(condValue, bodyBB, exitBB);
-  
 
   // Generazione del blocco 'body'
   drv.builder->SetInsertPoint(bodyBB);
@@ -664,31 +772,4 @@ Value* WhileExprAST::codegen(driver& drv) {
 
   drv.builder->SetInsertPoint(exitBB);
   return phi;
-}
-
-/************************* InitList Expression Tree **************************/
-// TODO!!!
-
-InitListExprAST::InitListExprAST(std::vector<ExprAST*> expr)
-: exprs(expr) {}
-
-void InitListExprAST::visit()
-{
-  std::cout << "{";
-
-  bool first = true;
-  for (auto *expr: exprs)
-  { 
-      if (first)
-        std::cout << ", ";
-
-      expr->visit();
-      first = false;
-  }
-  
-  std::cout << "}";
-} 
-
-Value *InitListExprAST::codegen(driver &drv) {
-  return nullptr;
 }

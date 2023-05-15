@@ -102,6 +102,7 @@ private:
 
 public:
   NumberExprAST(double Val);
+  double GetVal();
   void visit() override;
   Value *codegen(driver& drv) override;
 };
@@ -139,7 +140,7 @@ private:
   ExprAST *idx = nullptr;  // Utilizzato soltanto per gli array
   
 public:
-  AssignmentExprAST(std::string id, ExprAST* expr);
+  AssignmentExprAST(std::string id, ExprAST* expr, ExprAST* idx);
   void visit() override;
   Value *codegen(driver& drv) override;
 };
@@ -263,16 +264,6 @@ private:
 
 public:
   WhileExprAST(ExprAST* cond, ExprAST* body);
-  void visit() override;
-  Value* codegen(driver& drv) override;
-};
-
-class InitListExprAST : public ExprAST {
-private:
-  std::vector<ExprAST*> exprs;
-
-public:
-  InitListExprAST(std::vector<ExprAST*> expr);
   void visit() override;
   Value* codegen(driver& drv) override;
 };

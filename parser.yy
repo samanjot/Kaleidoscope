@@ -9,6 +9,7 @@
 
 %code requires {
   # include <string>
+  # include <vector>
   #include <exception>
   class driver;
   class RootAST;
@@ -26,15 +27,18 @@
 
   struct Pair {
     std::string id;
-    ExprAST* expr;
+    ExprAST* expr = nullptr;  // Opzionale, inializzazione di un double
+    ExprAST* arrSize = nullptr;  // Soltanto utilizzato per gli array
+    
+    // Soltanto utilizzato per gli array (opzionalmente, se presente
+    // l'inizializzazione)
+    std::vector<ExprAST*> initList;
   };
 
-  struct ProtoArgument{
+  struct ProtoArgument {
     std::string name;
     bool isPointer;
   };
-
-
 }
 
 // The parsing context.
@@ -106,6 +110,7 @@
 %type <Pair> pair
 %type <ExprAST*> whileexp
 %type <ProtoArgument> argument
+%type <ExprAST*> optarray
 
 %%
 %start startsymb;
@@ -177,11 +182,10 @@ exp:
 | varexp               { $$ = $1; }
 | whileexp             { $$ = $1; }
 | "number"             { $$ = new NumberExprAST($1); };
-| "{" explist "}"      { $$ = new InitListExprAST($2); }
 ;
 
 assignment:
-  "id" optarray "=" exp         { $$ = new AssignmentExprAST($1,$4); }  // TODO!!!
+  "id" optarray "=" exp         { $$ = new AssignmentExprAST($1,$4,$2); }
 
 unaryexp:
   "+" exp              { $$ = new UnaryExprAST('+',$2); }
@@ -204,17 +208,19 @@ varlist:
 ;
 
 pair:
-  "id" optarray         { $$ = { $1, nullptr }; }
-| "id" optarray "=" exp { $$ = { $1, $4 }; }  // TODO!!
+  "id" optarray                     { $$ = { $1, nullptr, $2 }; }
+| "id" optarray "=" exp             { $$ = { $1, $4, $2 }; }
+| "id" optarray "=" "{" explist "}" { $$ = { $1, nullptr, $2, $5 }; }
 ;
 
 optarray:
-  %empty
-| "[" exp "]"  //TODO!!!
+  %empty       { $$ = nullptr; }
+| "[" exp "]"  { $$ = $2; }
+;
 
 idexp:
   "id"                 { $$ = new VariableExprAST($1); }
-| "id" "[" exp "]"     { $$ = new VariableExprAST($1, $3); } // TODO!!!
+| "id" "[" exp "]"     { $$ = new VariableExprAST($1, $3); }
 | "id" "(" optexp ")"  { $$ = new CallExprAST($1,$3); };
 
 optexp:
