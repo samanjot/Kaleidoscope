@@ -1,7 +1,6 @@
 #include "driver.hh"
 #include "parser.hh"
 
-
 static AllocaInst *CreateEntryBlockAlloca(driver &drv,
                                           Function *func,
                                           const std::string &name,
@@ -25,17 +24,22 @@ static Type* GetDoubleArrayType(driver &drv, uint64_t size)
 
 static Value* GetArrayAddress(driver &drv, Value* idx, Value* base)
 {
-  assert(base->getType()->isPointerTy());
-  assert(idx->getType()->isDoubleTy());
+  if(!base->getType()->isPointerTy()) {
+    drv.CodegenError("Errore: non è consentito l'accesso ad un elemento per il tipo double\n");
+    return nullptr;
+  }
+
+  if(!idx->getType()->isDoubleTy()) {
+    drv.CodegenError("Errore: non è consentito l'accesso ad un elemento dove l'indice non è di tipo double\n");
+  }
 
   Type* baseType = static_cast<PointerType*>(base->getType());
   baseType = baseType->getContainedType(0);
 
   // A seconda che si utilizzino gli array o i puntatori, si fa un utilizzo leggermente
   // diverso dell'istruzione GetElementPointer.
-  if(baseType->isArrayTy()) {
+  if(baseType->isArrayTy()) {  // Puntatore ad un array
     Value* baseAddr = drv.builder->CreateLoad(baseType, base, "loadtmp");
-    // TODO check che idx sia double e non pointer
     Value* idxInt = drv.builder->CreateFPToUI(idx, Type::getInt64Ty(*drv.context), "casttmp");
 
     Value* indices[3] = { ConstantInt::get(*drv.context, APInt(32, 0)), idxInt };
@@ -43,19 +47,29 @@ static Value* GetArrayAddress(driver &drv, Value* idx, Value* base)
     
     return drv.builder->CreateInBoundsGEP(baseType, base, valueArr, "GEPtmp");
   }
-  else {
+  else if(baseType == Type::getDoublePtrTy(*drv.context)) {  // Puntatore ad un puntatore
     Value* baseAddr = drv.builder->CreateLoad(Type::getDoublePtrTy(*drv.context), base, "loadtmp");
-    // TODO check che idx sia double e non pointer
     Value* idxInt = drv.builder->CreateFPToUI(idx, Type::getInt64Ty(*drv.context), "casttmp");
-    // TODO il primo argomento qua dovrebbe essere baseType?
     return drv.builder->CreateGEP(Type::getDoubleTy(*drv.context), baseAddr, idxInt, "GEPtmp");
+  }
+  else {
+    if(baseType->isDoubleTy())
+      drv.CodegenError("Errore: Impossibile accedere ad un elemento di una variabile di tipo double\n");
+    else
+      drv.CodegenError("Errore: Tipo sconosciuto per accesso ad un elemento\n");
+
+    return nullptr;
   }
 }
 
-// TODO: assicurarsi che tutti i controlli che vengono fatti sopra vengono anche fatti qua
+// Funzione per il caso in cui idx sia noto e costante (ad esempio per le store degli
+// elementi degli array nella varexpr)
 static Value* GetArrayAddress(driver &drv, uint64_t idx, Value* base)
 {
-  assert(base->getType()->isPointerTy());
+  if(!base->getType()->isPointerTy()) {
+    drv.CodegenError("Errore: non è consentito l'accesso ad un elemento per il tipo double\n");
+    return nullptr;
+  }
 
   Type* baseType = static_cast<PointerType*>(base->getType());
   baseType = baseType->getContainedType(0);
@@ -140,13 +154,27 @@ void SeqAST:: visit() {
 };
 
 Value *SeqAST::codegen(driver& drv) {
-  if (first != nullptr) {
-    Value *f = first->codegen(drv);
-  } else {
-    if (continuation == nullptr) return nullptr;
+  Value* f = nullptr;
+  Value* c = nullptr;
+  
+  if(first)
+  {
+    f = first->codegen(drv);
+    if(!f) {
+      std::cerr << drv.error_string;
+      drv.error_string = std::string();
+      return nullptr;
+    }
   }
-  Value *c = continuation->codegen(drv);
-  return nullptr;
+
+  if(continuation)
+  {
+    c = continuation->codegen(drv);
+    if(!c)
+      return nullptr;
+  }
+
+  return f;
 };
 
 /********************* Number Expression Tree *********************/
@@ -256,13 +284,17 @@ Value* AssignmentExprAST::codegen(driver& drv)
       return nullptr;
   }
 
+  // Il rhs deve per forza essere un double
+  if(!value->getType()->isDoubleTy()) {
+    drv.CodegenError("Errore: Impossibile assegnare ad una variabile un valore di tipo 'array'\n");
+    return nullptr;
+  }
+
   Value *var = drv.NamedValues[id];
   if (!var)
     return nullptr;
 
   if (idx) {
-    // TODO: controlla che la var sia un array
-
     Value* idxValue = idx->codegen(drv);
     if(!idxValue)
       return nullptr;
@@ -271,9 +303,8 @@ Value* AssignmentExprAST::codegen(driver& drv)
     var = GetArrayAddress(drv, idxValue, var);
   }
   else {
-    // TODO: testa questo
-    if(!var->getType()->isDoubleTy()) {
-      std::cerr << "Errore: Assegnamento di un array non consentito\n";
+    if(var->getType() != Type::getDoublePtrTy(*drv.context)) {
+      drv.CodegenError("Errore: Assegnamento di un array non consentito\n");
       return nullptr;
     }
   }
@@ -301,6 +332,12 @@ Value *BinaryExprAST::codegen(driver& drv) {
     Value *L = LHS->codegen(drv);
     Value *R = RHS->codegen(drv);
     if (!L || !R) return nullptr;
+    
+    // Soltanto operazioni tra double sono ammesse, tranne le per operazioni di confronto
+    if(!L->getType()->isDoubleTy() || !R->getType()->isDoubleTy()) {
+      drv.CodegenError("Errore: Impossibile effettuare un'operazione binaria che non coinvolga due double\n");
+    }
+    
     switch (Op) {
     case Op_Add:
       return drv.builder->CreateFAdd(L,R,"addregister");
@@ -322,7 +359,7 @@ Value *BinaryExprAST::codegen(driver& drv) {
       return drv.builder->CreateFCmpONE(L,R,"cmpregister");
     case Op_MultiExp:
       return R;
-    default:  
+    default:
       return LogErrorV("Operatore binario non supportato");
     }
   }
@@ -348,14 +385,25 @@ Value *CallExprAST::codegen(driver& drv) {
     if (!CalleeF)
       return LogErrorV("Funzione non definita\n");
     // Controlliamo che gli argomenti coincidano in numero coi parametri
-    if (CalleeF->arg_size() != Args.size())
-      return LogErrorV("Numero di argomenti non corretto");
-    std::vector<Value *> ArgsV;
-    for (auto arg : Args) {
-      ArgsV.push_back(arg->codegen(drv));
-      if (!ArgsV.back())
-	return nullptr;
+    if (CalleeF->arg_size() != Args.size()) {
+      drv.CodegenError("Errore: il numero di argomenti della funzione non coincide con quelli della chiamata\n");
+      return nullptr;
     }
+
+    std::vector<Value *> ArgsV;
+    for(int i = 0; i < Args.size(); ++i) {
+      Value* argVal = Args[i]->codegen(drv);
+      if(CalleeF->getArg(i)->getType() != argVal->getType()) {
+        drv.CodegenError("Errore: i tipi degli argomenti della funzione non coincidono con quelli della chiamata\n");
+        return nullptr;
+      }
+      
+      ArgsV.push_back(argVal);
+
+      if (!ArgsV.back())
+	      return nullptr;
+    }
+
     return drv.builder->CreateCall(CalleeF, ArgsV, "calltmp");
   }
 }
@@ -472,15 +520,31 @@ Function *FunctionAST::codegen(driver& drv) {
   }
 
   drv.builder->CreateRet(retVal);
-  verifyFunction(*TheFunction);
+
   TheFunction->print(errs());
-  fprintf(stderr, "\n");
-  
-  if(!error) return TheFunction;
-  // Errore nella definizione. La funzione viene rimossa
-  TheFunction->eraseFromParent();
-  return nullptr;
-};
+
+  raw_os_ostream ostream(std::cout);
+  std::cerr << '\n';
+  if(verifyFunction(*TheFunction, &ostream)) {
+    std::cerr << "\nErrore: Funzione malformata, guardare i dettagli sopra.\n";
+    drv.codegen_error = true;
+
+    // Funzione malformata
+    TheFunction->eraseFromParent();
+    return nullptr;
+  }
+
+  // Errore nel codegen del body
+  if(error) {
+    std::cerr << "è avvenuto un errore nel codegen del body della funzione.\n";
+    drv.codegen_error = true;
+    
+    TheFunction->eraseFromParent();
+    return nullptr;
+  }
+
+  return TheFunction;
+}
 
 /************************* If Expression Tree **************************/
 
@@ -508,8 +572,13 @@ Value* IfExprAST::codegen(driver& drv) {
   if (!condValue)
     return nullptr;
 
+  // Solo value di tipo bool (cioè int1) oppure eventualmente double solo consentiti
   if(condValue->getType()->isDoubleTy())
     condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "ifcond");
+  else if(!condValue->getType()->isIntegerTy(1)) {  // Non è un bool
+    drv.CodegenError("Errore: condizione dell'if consente solamente bool o double\n");
+    return nullptr;
+  }
 
   Function* curFunction = drv.builder->GetInsertBlock()->getParent();
 
@@ -602,14 +671,16 @@ Value *ForExprAST::codegen(driver& drv)
   AllocaInst *oldVal = drv.NamedValues[id];
   drv.NamedValues[id] = alloca;
 
-  //auto *phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "fortmp");
-  //phi->addIncoming(initVal, preheader);
-
   Value* condValue = cond->codegen(drv);
   if(!condValue)
     return nullptr;
+  // Solo value di tipo bool (cioè int1) oppure eventualmente double solo consentiti
   if(condValue->getType()->isDoubleTy())
     condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "forcond");
+  else if(!condValue->getType()->isIntegerTy(1)) {  // Non è un bool
+    drv.CodegenError("Errore: condizione del for consente solamente bool o double\n");
+    return nullptr;
+  }
   
   drv.builder->CreateCondBr(condValue, bodyBB, exitBB);
   drv.builder->SetInsertPoint(exitBB);
@@ -632,6 +703,12 @@ Value *ForExprAST::codegen(driver& drv)
 
   if(!stepValue)
     return nullptr;
+
+  // Solo value di tipo double sono consentiti
+  if(!stepValue->getType()->isDoubleTy()) {
+    drv.CodegenError("Errore: lo step del for consente solamente valori di tipo double\n");
+    return nullptr;
+  }
 
   Value *currentValue = drv.builder->CreateLoad(alloca->getAllocatedType(), alloca, id.c_str());
   stepValue = drv.builder->CreateFAdd(currentValue, stepValue, "steptmp");
@@ -675,43 +752,89 @@ Value* VarExprAST::codegen(driver& drv) {
 
   // Passata per le allocazioni stack
   for(int i = 0; i < vars.size(); ++i) {
+    //// Allocazione ////
     AllocaInst* alloca = nullptr;
+    bool isVLA = false;
+    uint64_t staticLength = 0;
 
     if(vars[i].arrSize) {
       if(auto numExpr = dynamic_cast<NumberExprAST*>(vars[i].arrSize)) {
-        alloca = drv.builder->CreateAlloca(ArrayType::get(Type::getDoubleTy(*drv.context),
-                                                          (uint64_t)numExpr->GetVal()),
-                                           nullptr, vars[i].id);
+        staticLength = (uint64_t)numExpr->GetVal();
+        alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), vars[i].id,
+                                        ArrayType::get(Type::getDoubleTy(*drv.context), staticLength));
       }
-      else {
-        std::cerr << "Attenzione! Si sta tentando di utilizzare le VLA!\n";
-        return nullptr;
-        // TODO: stampa errore (variable length array) oppure gestisci questo caso (in questo caso bisogna usare un puntatore)
+      else {  // Variable length array
+        isVLA = true;
+        Value* arrLength = vars[i].arrSize->codegen(drv);
+        if(!arrLength)
+          return nullptr;
+
+        if(!arrLength->getType()->isDoubleTy()) {
+          drv.CodegenError("Errore: La dimensione di un array deve essere di tipo double\n");
+          return nullptr;
+        }
+
+        // Conversione in int
+        Value* arrLengthInt = drv.builder->CreateFPToUI(arrLength, Type::getInt64Ty(*drv.context), "casttmp");
+
+        // Molto meno probabile che l'ottimizzatore la possa rimuovere (essendo VLA),
+        // quindi si può inserire direttamente qua
+        alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), arrLengthInt);
       }
     }
     else
-      alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), nullptr, vars[i].id);
+      alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), vars[i].id, Type::getDoubleTy(*drv.context));
 
-    drv.NamedValues[vars[i].id] = alloca;
-  }
-
-  // Passata per le inizializzazioni (store)
-  for(int i = 0; i < vars.size(); ++i) {
-    auto alloca = drv.NamedValues[vars[i].id];
+    //// Inizializzazione ////
     if(vars[i].arrSize) {  // Si tratta di una dichiarazione di array
+
+      if(vars[i].expr) {
+        drv.CodegenError("Errore: un array deve essere inizializzato tramite initializer list\n");
+        return nullptr;
+      }
+
+      if(isVLA && vars[i].initList.size() > 0) {
+        drv.CodegenError("Errore: non è consentito inizializzare un VLA staticamente\n");
+        return nullptr;
+      }
+      
+      if(!isVLA && vars[i].initList.size() > 0 && staticLength != vars[i].initList.size()) {
+        drv.CodegenError("Errore: la dimensione dell'array dichiarato non combacia con il numero di elementi nell'initializer list\n");
+        return nullptr;
+      }
+
       for(int j = 0; j < vars[i].initList.size(); ++j) {
+
         Value* toStore = vars[i].initList[j]->codegen(drv);
         Value* storeInto = GetArrayAddress(drv, j, alloca);
+        if(!toStore || !storeInto)
+          return nullptr;
+
+        if(!toStore->getType()->isDoubleTy()) {
+          drv.CodegenError("Errore: Soltanto valori di tipo double sono ammessi in un initializer list\n");
+          return nullptr;
+        }
+
         drv.builder->CreateStore(toStore, storeInto);
       }
     }
     else if(vars[i].expr) {  // Si tratta di una dichiarazione di double
-      // TODO: controlla che venga assegnato il tipo giusto
+      Type* allocatedType = static_cast<PointerType*>(alloca->getType());
+      allocatedType = allocatedType->getContainedType(0);
+
       Value* exprValue = vars[i].expr->codegen(drv);
       if(!exprValue) return nullptr;
 
+      if(allocatedType != exprValue->getType()) {
+        drv.CodegenError("Errore: La variabile dichiarata e il valore con cui è stata inizializzata non coincidono\n");
+        return nullptr;
+      }
+
       drv.builder->CreateStore(exprValue, alloca);
     }
+
+    //// Memorizzazione nella symbol table ////
+    drv.NamedValues[vars[i].id] = alloca;
   }
 
   Value *value = body->codegen(drv);
@@ -760,8 +883,13 @@ Value* WhileExprAST::codegen(driver& drv) {
   Value* condValue = cond->codegen(drv);
   if(!condValue)
     return nullptr;
+  // Solo value di tipo bool (cioè int1) oppure eventualmente double solo consentiti
   if(condValue->getType()->isDoubleTy())
-    condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "forcond");
+    condValue = drv.builder->CreateFCmpONE(condValue, ConstantFP::get(*drv.context, APFloat(0.0)), "whilecond");
+  else if(!condValue->getType()->isIntegerTy(1)) {  // Non è un bool
+    drv.CodegenError("Errore: condizione del while consente solamente bool o double\n");
+    return nullptr;
+  }
   
   drv.builder->CreateCondBr(condValue, bodyBB, exitBB);
 

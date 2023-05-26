@@ -48,6 +48,11 @@ int main (int argc, char *argv[])
       Filename = argv[++i]+(std::string)".o"; // Crea codice oggetto nel file indicato
     else  if (!drv.parse(argv[i])) { // Parsing e creazione dell'AST
       drv.codegen();                 // Visita AST e generazione dell'IR (su stdout)
+      if(drv.codegen_error) {
+        return 1;
+      }
+      else std::cerr << "Codegen avvenuto con successo\n";
+
       if (Filename != "") {
 	/*****************************************************************/
 	/******************** Generazione codice oggetto *****************/

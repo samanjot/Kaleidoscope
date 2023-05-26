@@ -7,6 +7,7 @@
 #include "llvm/Support/Host.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 /***************************************************************************/
@@ -61,7 +62,10 @@ public:
   bool trace_scanning;// Abilita le tracce di debug nello scanner
   yy::location location; // Utillizata dallo scannar per localizzare i token
   bool ast_print;
+  bool codegen_error = false;
+  std::string error_string;
   void codegen();
+  void CodegenError(const char* error) { codegen_error = true; error_string.append(error); }
 };
 
 // Classe base dell'intera gerarchia di classi che rappresentano
