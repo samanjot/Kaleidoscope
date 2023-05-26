@@ -620,6 +620,10 @@ Value *ForExprAST::codegen(driver& drv)
   if(!bodyValue)
     return nullptr;
 
+  // Il codegen di body potrebbe nel frattempo aver creato altri blocchi
+  // e/o aver alterato il blocco di inserimento del builder
+  BasicBlock* bodyExitBB = drv.builder->GetInsertBlock();
+
   Value* stepValue;
   if(step)
     stepValue = step->codegen(drv);
@@ -633,7 +637,7 @@ Value *ForExprAST::codegen(driver& drv)
   stepValue = drv.builder->CreateFAdd(currentValue, stepValue, "steptmp");
   drv.builder->CreateStore(stepValue, alloca);
 
-  phi->addIncoming(bodyValue, bodyBB);
+  phi->addIncoming(bodyValue, bodyExitBB);
   drv.builder->CreateBr(header);
 
   // Ripristino della vecchia variabile
@@ -767,7 +771,9 @@ Value* WhileExprAST::codegen(driver& drv) {
   if(!bodyValue)
     return nullptr;
 
-  phi->addIncoming(bodyValue, bodyBB);
+  BasicBlock* exitBodyBB = drv.builder->GetInsertBlock();
+  
+  phi->addIncoming(bodyValue, exitBodyBB);
   drv.builder->CreateBr(header);
 
   drv.builder->SetInsertPoint(exitBB);
