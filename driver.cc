@@ -333,9 +333,10 @@ Value *BinaryExprAST::codegen(driver& drv) {
     Value *R = RHS->codegen(drv);
     if (!L || !R) return nullptr;
     
-    // Soltanto operazioni tra double sono ammesse, tranne le per operazioni di confronto
+    // Soltanto operazioni tra double sono ammesse, tranne per le operazioni di confronto
     if(!L->getType()->isDoubleTy() || !R->getType()->isDoubleTy()) {
       drv.CodegenError("Errore: Impossibile effettuare un'operazione binaria che non coinvolga due double\n");
+      return nullptr;
     }
     
     switch (Op) {
@@ -385,19 +386,27 @@ Value *CallExprAST::codegen(driver& drv) {
     if (!CalleeF)
       return LogErrorV("Funzione non definita\n");
     // Controlliamo che gli argomenti coincidano in numero coi parametri
-    if (CalleeF->arg_size() != Args.size()) {
+
+    bool sameNumArgs = (Args.size() == 1 && !Args[0] && CalleeF->arg_size() == 0);  // Viene inserito nullptr dentro al vector
+    sameNumArgs |= CalleeF->arg_size() == Args.size();
+    if (!sameNumArgs) {
       drv.CodegenError("Errore: il numero di argomenti della funzione non coincide con quelli della chiamata\n");
+      std::cout << CalleeF->arg_size() << " " << Args.size() << "\n"; 
       return nullptr;
     }
 
+std::cout << CalleeF->arg_size() << " " << Args.size() << "\n";
+
     std::vector<Value *> ArgsV;
     for(int i = 0; i < Args.size(); ++i) {
+      if(!Args[i]) continue;  // Il primo elemento è nullptr quando il vettore dovrebbe essere vuoto
+
       Value* argVal = Args[i]->codegen(drv);
       if(CalleeF->getArg(i)->getType() != argVal->getType()) {
         drv.CodegenError("Errore: i tipi degli argomenti della funzione non coincidono con quelli della chiamata\n");
         return nullptr;
       }
-      
+
       ArgsV.push_back(argVal);
 
       if (!ArgsV.back())
@@ -877,8 +886,7 @@ Value* WhileExprAST::codegen(driver& drv) {
   drv.builder->SetInsertPoint(header);
 
   PHINode* phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "whiletmp");
-  phi->addIncoming(ConstantFP::get(*drv.context, APFloat(0.0)),
-                   preheader);
+  phi->addIncoming(ConstantFP::get(*drv.context, APFloat(0.0)), preheader);
 
   Value* condValue = cond->codegen(drv);
   if(!condValue)

@@ -1,16 +1,25 @@
 
+extern putchard(d);
+
+def putcharalpha(a) putchard(a+97);
+def putnewline() putchard(13) : putchard(10);
+
 def prova2(x y[])
   if x then 2 else 3 end
 ;
 
-def prova(x y[])
-  prova2(x, y) :
-  var a[3], b[3] = {1,2,3} in
-    y[x] = x :
-    for y=x, y<10, 1 in
-      while y>3 in
-        y+1
-      end
+def simple(x y)
+  var a = 0, b = 0 in
+    while a < 5 in
+      while b < 2 in
+        x = x * 2 :
+        b = b + 1 :
+        putcharalpha(1)
+      end :
+      a = a + 1 :
+      putcharalpha(0) :
+      putnewline() :
+      x = x + 0
     end
   end
 ;
