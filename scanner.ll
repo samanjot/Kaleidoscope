@@ -43,6 +43,7 @@ blank   [ \t]
   loc.step ();
 %}
 {blank}+   loc.step ();
+[\r]+      loc.step ();
 [\n]+      loc.lines (yyleng); loc.step ();
 
 ":"      return yy::parser::make_MULTIEXP  (loc);

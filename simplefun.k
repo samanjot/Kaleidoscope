@@ -8,6 +8,15 @@ def prova2(x y[])
   if x then 2 else 3 end
 ;
 
+def g(x)
+  var c[5], b = 0 in
+    for a = 0, a < 5 in
+      c[a] = a :
+      b = b + c[a]
+    end
+  end
+;
+
 def simple(x y)
   var a = 0, b = 0 in
     while a < 5 in

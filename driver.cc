@@ -662,6 +662,7 @@ Value *ForExprAST::codegen(driver& drv)
   Value *initVal = init->codegen(drv);
   if (!initVal)
     return nullptr;
+  drv.builder->CreateStore(initVal, alloca);
 
   BasicBlock *header = BasicBlock::Create(*drv.context, "header", curFunction);
   BasicBlock *bodyBB = BasicBlock::Create(*drv.context, "body", curFunction);
