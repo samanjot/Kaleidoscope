@@ -137,9 +137,8 @@ public:
 };
 
 class AssignmentExprAST : public ExprAST {
-public:
-  std::string id;
 private:
+  std::string id;
   ExprAST *expr;
   ExprAST *idx = nullptr;  // Utilizzato soltanto per gli array
   
@@ -149,13 +148,51 @@ public:
   Value *codegen(driver& drv) override;
 };
 
+class VarExprInitialization {
+private:
+  std::string id;
+
+public:
+  VarExprInitialization(std::string id);
+  virtual void visit();
+  virtual AllocaInst *codegen(driver &drv);
+
+  inline std::string getId() {
+    return id;
+  }
+};
+
+class VarExprInitDouble : public VarExprInitialization {
+private:
+  ExprAST *value;
+
+public:
+  VarExprInitDouble(std::string id, ExprAST *value);
+  void visit() override;
+  AllocaInst *codegen(driver &drv) override;
+};
+
+class VarExprInitArray : public VarExprInitialization {
+private:
+  ExprAST *size;
+  std::vector<ExprAST *> values;
+
+public:
+  VarExprInitArray(std::string id, 
+                  ExprAST *size,
+                  std::vector<ExprAST *> values);
+  void visit() override;
+  AllocaInst *codegen(driver &drv) override;
+};
+
+
 class VarExprAST : public ExprAST {
 private:
-  std::vector<Pair> vars;
+  std::vector<VarExprInitialization *> vars;
   ExprAST* body;
 
-  public:
-  VarExprAST(std::vector<Pair>& vars, ExprAST* body);
+public:
+  VarExprAST(std::vector<VarExprInitialization *>& vars, ExprAST* body);
   void visit() override;
   Value* codegen(driver& drv) override;
 };

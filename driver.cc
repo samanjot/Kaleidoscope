@@ -121,9 +121,7 @@ Value* TopExpression(ExprAST* E, driver& drv) {
 		  std::vector<ProtoArgument>());
   Proto->noemit();
   FunctionAST *F = new FunctionAST(std::move(Proto),E);
-  auto *FnIR = F->codegen(drv);
-  FnIR->eraseFromParent();
-  return nullptr;
+  return F->codegen(drv);
 };
 
 /************************ Expression tree *************************/
@@ -210,7 +208,9 @@ Value *VariableExprAST::codegen(driver& drv) {
 
   Value* result = nullptr;
   AllocaInst *V = drv.NamedValues[Name];
-  if (!V) LogErrorV("Variabile non definita");
+  if (!V) {
+    LogErrorV("Variabile non definita");
+  }
   if(V->getType()->isPointerTy()) {
     Type* baseType = static_cast<PointerType*>(V->getType());
     baseType = baseType->getContainedType(0);
@@ -301,6 +301,8 @@ Value* AssignmentExprAST::codegen(driver& drv)
 
     // In questo modo, la store viene effettuata nel singolo elemento dell'array
     var = GetArrayAddress(drv, idxValue, var);
+    if (!var)
+      return nullptr;
   }
   else {
     if(var->getType() != Type::getDoublePtrTy(*drv.context)) {
@@ -358,6 +360,8 @@ Value *BinaryExprAST::codegen(driver& drv) {
       return drv.builder->CreateFCmpOLE(L,R,"cmpregister");
     case Op_NE:
       return drv.builder->CreateFCmpONE(L,R,"cmpregister");
+    case Op_EQ:
+      return drv.builder->CreateFCmpOEQ(L, R, "cmpregister");
     case Op_MultiExp:
       return R;
     default:
@@ -604,7 +608,7 @@ Value* IfExprAST::codegen(driver& drv) {
     return nullptr;
 
   drv.builder->CreateBr(mergeBB);
-  //thenBB = drv.builder->GetInsertBlock();
+  auto *thenbb = drv.builder->GetInsertBlock();
 
   // Generazione del blocco 'else'
   drv.builder->SetInsertPoint(elseBB);
@@ -614,13 +618,14 @@ Value* IfExprAST::codegen(driver& drv) {
     return nullptr;
 
   drv.builder->CreateBr(mergeBB);
+  auto *elsebb = drv.builder->GetInsertBlock();
 
   // Generazione del blocco 'merge'
   drv.builder->SetInsertPoint(mergeBB);
 
   PHINode* phi = drv.builder->CreatePHI(Type::getDoubleTy(*drv.context), 2, "iftmp");
-  phi->addIncoming(thenValue, thenBB);
-  phi->addIncoming(elseValue, elseBB);
+  phi->addIncoming(thenValue, thenbb);
+  phi->addIncoming(elseValue, elsebb);
   return phi;
 }
 
@@ -734,16 +739,184 @@ Value *ForExprAST::codegen(driver& drv)
   return phi;
 }
 
+/**************************Varexpr initialization ***************************/
+VarExprInitialization::VarExprInitialization(std::string id) :
+id (id)
+{}
+
+void VarExprInitialization::visit() 
+{
+  std::cout << id;
+}
+
+AllocaInst *VarExprInitialization::codegen(driver &drv)
+{
+  return CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), id, Type::getDoubleTy(*drv.context));
+}
+
+VarExprInitDouble::VarExprInitDouble(std::string id, ExprAST *value) :
+VarExprInitialization(id),
+value(value)
+{}
+
+void VarExprInitDouble::visit() 
+{
+  std::cout << getId() << " = ";
+  if (value)
+    value->visit();
+}
+
+AllocaInst *VarExprInitDouble::codegen(driver &drv)
+{
+  AllocaInst *alloca = VarExprInitialization::codegen(drv);
+
+  if (!value) {
+    drv.CodegenError("Errore: valore inizializzazione espressione nulla");
+    return nullptr;
+  }
+
+  Type* allocatedType = static_cast<PointerType*>(alloca->getType());
+  allocatedType = allocatedType->getContainedType(0);
+
+  Value* exprValue = value->codegen(drv);
+  if(!exprValue) return nullptr;
+
+  if(allocatedType != exprValue->getType()) {
+    drv.CodegenError("Errore: La variabile dichiarata e il valore con cui è stata inizializzata non coincidono\n");
+    return nullptr;
+  }
+
+  drv.builder->CreateStore(exprValue, alloca);
+  return alloca;
+}
+
+VarExprInitArray::VarExprInitArray(std::string id, 
+                                  ExprAST *size,
+                                  std::vector<ExprAST* > values):
+VarExprInitialization(id),
+size(size),
+values(values)
+{}
+
+void VarExprInitArray::visit() 
+{
+  std::cout << getId();
+  if (!size && values.empty())
+    return;
+
+  std::cout << "[";
+  if (size)
+    size->visit();
+
+  std::cout << "]";
+
+  if (values.empty())
+    return;
+
+  std::cout << " = {";
+
+  bool first = true;
+  for (ExprAST *value : values) {
+    if (!first)
+      std::cout << ", ";
+    
+    value->visit();
+    first = false;
+  }
+
+  std::cout << "}";
+}
+
+AllocaInst *VarExprInitArray::codegen(driver &drv)
+{
+  AllocaInst *alloca = nullptr;
+  bool isVLA = false;
+  uint64_t staticLength = 0;
+
+  if(auto numExpr = dynamic_cast<NumberExprAST*>(size)) {
+    staticLength = (uint64_t)numExpr->GetVal();
+    alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), getId(),
+                                    ArrayType::get(Type::getDoubleTy(*drv.context), staticLength));
+  }
+  else if (size) {  // Variable length array
+    isVLA = true;
+    Value* arrLength = size->codegen(drv);
+    if(!arrLength) {
+      drv.CodegenError("Errore: lenght failed");
+      return nullptr;
+    }
+
+    if(!arrLength->getType()->isDoubleTy()) {
+      drv.CodegenError("Errore: La dimensione di un array deve essere di tipo double\n");
+      return nullptr;
+    }
+
+    // Conversione in int
+    Value* arrLengthInt = drv.builder->CreateFPToUI(arrLength, Type::getInt64Ty(*drv.context), "casttmp");
+
+    // Molto meno probabile che l'ottimizzatore la possa rimuovere (essendo VLA),
+    // quindi si può inserire direttamente qua
+    auto *tmpAlloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), arrLengthInt);
+    if (!tmpAlloca)
+      return nullptr;
+
+    alloca = drv.builder->CreateAlloca(Type::getDoublePtrTy(*drv.context), nullptr, getId());
+    if (!alloca)
+      return nullptr;
+
+    drv.builder->CreateStore(tmpAlloca, alloca);
+    
+  } else {
+    if (values.empty()) {
+      drv.CodegenError("Errore: La dimensione di un array deve essere specificata");
+      return nullptr;
+    }
+
+    staticLength = values.size();
+    alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), getId(),
+                                    ArrayType::get(Type::getDoubleTy(*drv.context), staticLength));
+  }
+
+  if(isVLA && values.size() > 0) {
+    drv.CodegenError("Errore: non è consentito inizializzare un VLA staticamente\n");
+    return nullptr;
+  }
+  
+  if(!isVLA && values.size() > 0 && staticLength != values.size()) {
+    drv.CodegenError("Errore: la dimensione dell'array dichiarato non combacia con il numero di elementi nell'initializer list\n");
+    return nullptr;
+  }
+
+  for(int j = 0; j < values.size(); ++j) {
+
+    Value* toStore = values[j]->codegen(drv);
+    Value* storeInto = GetArrayAddress(drv, j, alloca);
+    if(!toStore || !storeInto)
+      return nullptr;
+
+    if(!toStore->getType()->isDoubleTy()) {
+      drv.CodegenError("Errore: Soltanto valori di tipo double sono ammessi in un initializer list\n");
+      return nullptr;
+    }
+
+    drv.builder->CreateStore(toStore, storeInto);
+  }
+
+  return alloca;
+}
+
+
+
 /************************* Varexpr Expression Tree **************************/
 
-VarExprAST::VarExprAST(std::vector<Pair>& vars, ExprAST* body)
+VarExprAST::VarExprAST(std::vector<VarExprInitialization *>& vars, ExprAST* body)
 : vars(vars), body(body)
 { }
 
 void VarExprAST::visit() {
   std::cout << "varexpr list (";
   for(int i = 0; i < vars.size(); ++i) {
-    vars[i].expr->visit();
+    vars[i]->visit();
     if(i < vars.size() - 1)
       std::cout << " , ";
   }
@@ -760,98 +933,25 @@ Value* VarExprAST::codegen(driver& drv) {
   // Per gestire lo shadowing
   std::map<std::string, AllocaInst*> shadowed = drv.NamedValues;
 
+  std::map<std::string, AllocaInst*> toShadow;
+
   // Passata per le allocazioni stack
-  for(int i = 0; i < vars.size(); ++i) {
-    //// Allocazione ////
-    AllocaInst* alloca = nullptr;
-    bool isVLA = false;
-    uint64_t staticLength = 0;
+  for (auto *var : vars) {
+    auto *alloca = var->codegen(drv);
+    if (!alloca)
+      return nullptr;
 
-    if(vars[i].arrSize) {
-      if(auto numExpr = dynamic_cast<NumberExprAST*>(vars[i].arrSize)) {
-        staticLength = (uint64_t)numExpr->GetVal();
-        alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), vars[i].id,
-                                        ArrayType::get(Type::getDoubleTy(*drv.context), staticLength));
-      }
-      else {  // Variable length array
-        isVLA = true;
-        Value* arrLength = vars[i].arrSize->codegen(drv);
-        if(!arrLength)
-          return nullptr;
-
-        if(!arrLength->getType()->isDoubleTy()) {
-          drv.CodegenError("Errore: La dimensione di un array deve essere di tipo double\n");
-          return nullptr;
-        }
-
-        // Conversione in int
-        Value* arrLengthInt = drv.builder->CreateFPToUI(arrLength, Type::getInt64Ty(*drv.context), "casttmp");
-
-        // Molto meno probabile che l'ottimizzatore la possa rimuovere (essendo VLA),
-        // quindi si può inserire direttamente qua
-        alloca = drv.builder->CreateAlloca(Type::getDoubleTy(*drv.context), arrLengthInt);
-      }
-    }
-    else
-      alloca = CreateEntryBlockAlloca(drv, drv.builder->GetInsertBlock()->getParent(), vars[i].id, Type::getDoubleTy(*drv.context));
-
-    //// Inizializzazione ////
-    if(vars[i].arrSize) {  // Si tratta di una dichiarazione di array
-
-      if(vars[i].expr) {
-        drv.CodegenError("Errore: un array deve essere inizializzato tramite initializer list\n");
-        return nullptr;
-      }
-
-      if(isVLA && vars[i].initList.size() > 0) {
-        drv.CodegenError("Errore: non è consentito inizializzare un VLA staticamente\n");
-        return nullptr;
-      }
-      
-      if(!isVLA && vars[i].initList.size() > 0 && staticLength != vars[i].initList.size()) {
-        drv.CodegenError("Errore: la dimensione dell'array dichiarato non combacia con il numero di elementi nell'initializer list\n");
-        return nullptr;
-      }
-
-      for(int j = 0; j < vars[i].initList.size(); ++j) {
-
-        Value* toStore = vars[i].initList[j]->codegen(drv);
-        Value* storeInto = GetArrayAddress(drv, j, alloca);
-        if(!toStore || !storeInto)
-          return nullptr;
-
-        if(!toStore->getType()->isDoubleTy()) {
-          drv.CodegenError("Errore: Soltanto valori di tipo double sono ammessi in un initializer list\n");
-          return nullptr;
-        }
-
-        drv.builder->CreateStore(toStore, storeInto);
-      }
-    }
-    else if(vars[i].expr) {  // Si tratta di una dichiarazione di double
-      Type* allocatedType = static_cast<PointerType*>(alloca->getType());
-      allocatedType = allocatedType->getContainedType(0);
-
-      Value* exprValue = vars[i].expr->codegen(drv);
-      if(!exprValue) return nullptr;
-
-      if(allocatedType != exprValue->getType()) {
-        drv.CodegenError("Errore: La variabile dichiarata e il valore con cui è stata inizializzata non coincidono\n");
-        return nullptr;
-      }
-
-      drv.builder->CreateStore(exprValue, alloca);
-    }
-
-    //// Memorizzazione nella symbol table ////
-    drv.NamedValues[vars[i].id] = alloca;
+    toShadow[var->getId()] = alloca;
   }
+
+  for (auto shadow : toShadow)
+    drv.NamedValues[shadow.first] = shadow.second;
 
   Value *value = body->codegen(drv);
   if(!value)
     return nullptr;
 
-  // Ripristino della mappa
+  // Ripristino della mappastd::cout << toShadow;
   drv.NamedValues = shadowed;
 
   return value;

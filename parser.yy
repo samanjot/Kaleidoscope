@@ -22,18 +22,8 @@
   class AssignmentExprAST;
   class WhileExprAST;
   class VarExprAST;
-  struct Pair;
+  class VarExprInitialization;
   struct ProtoArgument;
-
-  struct Pair {
-    std::string id;
-    ExprAST* expr = nullptr;  // Opzionale, inializzazione di un double
-    ExprAST* arrSize = nullptr;  // Soltanto utilizzato per gli array
-    
-    // Soltanto utilizzato per gli array (opzionalmente, se presente
-    // l'inizializzazione)
-    std::vector<ExprAST*> initList;
-  };
 
   struct ProtoArgument {
     std::string name;
@@ -106,8 +96,8 @@
 %type <std::vector<ProtoArgument>> idseq
 %type <ExprAST*> assignment
 %type <ExprAST*> varexp
-%type <std::vector<Pair>> varlist
-%type <Pair> pair
+%type <std::vector<VarExprInitialization *>> varlist
+%type <VarExprInitialization *> pair
 %type <ExprAST*> whileexp
 %type <ProtoArgument> argument
 %type <ExprAST*> optarray
@@ -197,7 +187,7 @@ varexp:
 ;
 
 varlist:
-  pair                  { std::vector<Pair> vars;
+  pair                  { std::vector<VarExprInitialization *> vars;
                           vars.push_back($1);
                           $$ = vars;
                         }
@@ -208,9 +198,10 @@ varlist:
 ;
 
 pair:
-  "id" optarray                     { $$ = { $1, nullptr, $2 }; }
-| "id" optarray "=" exp             { $$ = { $1, $4, $2 }; }
-| "id" optarray "=" "{" explist "}" { $$ = { $1, nullptr, $2, $5 }; }
+  "id"                                 { $$ = new VarExprInitialization($1); }
+| "id" "=" exp                         { $$ = new VarExprInitDouble($1, $3); }
+| "id" "[" exp "]"                     { $$ = new VarExprInitArray($1, $3, {}); }
+| "id" "[" exp "]" "=" "{" optexp "}"  { $$ = new VarExprInitArray($1, $3, $7); }
 ;
 
 optarray:
