@@ -42,7 +42,7 @@ static Value* GetArrayAddress(driver &drv, Value* idx, Value* base)
     Value* baseAddr = drv.builder->CreateLoad(baseType, base, "loadtmp");
     Value* idxInt = drv.builder->CreateFPToUI(idx, Type::getInt64Ty(*drv.context), "casttmp");
 
-    Value* indices[3] = { ConstantInt::get(*drv.context, APInt(32, 0)), idxInt };
+    Value* indices[2] = { ConstantInt::get(*drv.context, APInt(32, 0)), idxInt };
     ArrayRef<Value*> valueArr(indices, 2);
     
     return drv.builder->CreateInBoundsGEP(baseType, base, valueArr, "GEPtmp");
@@ -79,7 +79,7 @@ static Value* GetArrayAddress(driver &drv, uint64_t idx, Value* base)
   if(baseType->isArrayTy()) {  // Puntatore ad un array
     Value* baseAddr = drv.builder->CreateLoad(baseType, base, "loadtmp");
 
-    Value* indices[3] = { ConstantInt::get(*drv.context, APInt(32, 0)), ConstantInt::get(*drv.context, APInt(64, idx)) };
+    Value* indices[2] = { ConstantInt::get(*drv.context, APInt(32, 0)), ConstantInt::get(*drv.context, APInt(64, idx)) };
     ArrayRef<Value*> valueArr(indices, 2);
 
     return drv.builder->CreateInBoundsGEP(baseType, base, valueArr, "GEPtmp");
@@ -990,7 +990,7 @@ Value* VarExprAST::codegen(driver& drv) {
   if(!value)
     return nullptr;
 
-  // Ripristino della mappastd::cout << toShadow;
+  // Ripristino della mappa
   drv.NamedValues = shadowed;
 
   return value;
