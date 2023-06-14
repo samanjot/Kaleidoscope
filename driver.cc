@@ -882,10 +882,8 @@ AllocaInst *VarExprInitArray::codegen(driver &drv)
   else if (size) {  // Variable length array
     isVLA = true;
     Value* arrLength = size->codegen(drv);
-    if(!arrLength) {
-      drv.CodegenError("Errore: lenght failed");
+    if(!arrLength)
       return nullptr;
-    }
 
     if(!arrLength->getType()->isDoubleTy()) {
       drv.CodegenError("Errore: La dimensione di un array deve essere di tipo double\n");
