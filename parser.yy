@@ -216,8 +216,7 @@ idexp:
 
 optexp:
 %empty                 { std::vector<ExprAST*> args;
-                         args.push_back(nullptr);
-			 $$ = args;
+			                   $$ = args;
                        }
 | explist              { $$ = $1; };
 

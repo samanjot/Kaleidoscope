@@ -147,7 +147,7 @@ void SeqAST:: visit() {
       return;
     };
   };
-  std::cout << ";";
+  std::cout << ";\n";
   continuation->visit();
 };
 
@@ -210,6 +210,7 @@ Value *VariableExprAST::codegen(driver& drv) {
   AllocaInst *V = drv.NamedValues[Name];
   if (!V) {
     LogErrorV("Variabile non definita");
+    return nullptr;
   }
   if(V->getType()->isPointerTy()) {
     Type* baseType = static_cast<PointerType*>(V->getType());
@@ -253,6 +254,11 @@ Value* UnaryExprAST::codegen(driver& drv) {
   
   Value* value = expr->codegen(drv);
   if (!value) return nullptr;
+
+  if(!value->getType()->isDoubleTy()) {
+    drv.CodegenError("Errore: Impossibile effettuare un'operazione unaria che non coinvolga un double\n");
+    return nullptr;
+  }
   
   switch (op) {
   case '+':
@@ -321,8 +327,46 @@ BinaryExprAST::BinaryExprAST(BinOp Op, ExprAST* LHS, ExprAST* RHS):
   Op(Op), LHS(LHS), RHS(RHS) { top = false; };
  
 void BinaryExprAST::visit() {
-  std::cout << "(" << Op << " ";
+  std::cout << "(" ;
+
+  switch (Op) {
+    case Op_Add:
+      std::cout << "+ ";
+      break;
+    case Op_Sub:
+      std::cout << "- ";
+      break;
+    case Op_Mul:
+      std::cout << "* ";
+      break;
+    case Op_Div:
+      std::cout << "/ ";
+      break;
+    case Op_GT:
+      std::cout << "> ";
+      break;
+    case Op_GE:
+      std::cout << ">= ";
+      break;
+    case Op_LT:
+      std::cout << "< ";
+      break;
+    case Op_LE:
+      std::cout << "<= ";
+      break;
+    case Op_NE:
+      std::cout << "!= ";
+      break;
+    case Op_EQ:
+      std::cout << "== ";
+      break;
+    case Op_MultiExp:
+      std::cout << ": ";
+      break;
+  };
+
   LHS->visit();
+  std::cout << " ";
   if (RHS!=nullptr) RHS->visit();
   std::cout << ")";
 };
@@ -391,15 +435,11 @@ Value *CallExprAST::codegen(driver& drv) {
       return LogErrorV("Funzione non definita\n");
     // Controlliamo che gli argomenti coincidano in numero coi parametri
 
-    bool sameNumArgs = (Args.size() == 1 && !Args[0] && CalleeF->arg_size() == 0);  // Viene inserito nullptr dentro al vector
-    sameNumArgs |= CalleeF->arg_size() == Args.size();
-    if (!sameNumArgs) {
+    if (CalleeF->arg_size() != Args.size()) {
       drv.CodegenError("Errore: il numero di argomenti della funzione non coincide con quelli della chiamata\n");
       std::cout << CalleeF->arg_size() << " " << Args.size() << "\n"; 
       return nullptr;
     }
-
-std::cout << CalleeF->arg_size() << " " << Args.size() << "\n";
 
     std::vector<Value *> ArgsV;
     for(int i = 0; i < Args.size(); ++i) {
@@ -492,8 +532,9 @@ void FunctionAST::visit() {
     std::cout << " ";
   }
   
-  std::cout << ')';
+  std::cout << ") { ";
   Body->visit();
+  std::cout << " }";
 };
 
 Function *FunctionAST::codegen(driver& drv) {
@@ -574,7 +615,7 @@ void IfExprAST::visit() {
   thenExpr->visit();
   std::cout << ") else (";
   elseExpr->visit();
-  std::cout << '\n';
+  std::cout << ')';
 }
 
 Value* IfExprAST::codegen(driver& drv) {
@@ -649,7 +690,7 @@ void ForExprAST::visit() {
     std::cout << ") step (1";
   std::cout << ") in (";
   body->visit();
-  std::cout << ")\n";
+  std::cout << ")";
 }
 
 Value *ForExprAST::codegen(driver& drv)
